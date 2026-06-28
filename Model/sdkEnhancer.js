@@ -308,6 +308,42 @@ function enhanceSdk12(sdk) {
   return sdk
 }
 
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function patchQQBotRemoveAt(sdk) {
+  if (!sdk || sdk.__qqbotPluginRemoveAtPatched) return sdk
+  sdk.__qqbotPluginRemoveAtPatched = true
+
+  sdk.removeAt = function (payload = {}) {
+    if (typeof payload.content !== 'string') return
+
+    // 保留 SDK 删除 @ 之前的原文，用于判断消息是否以 @普通用户 开头
+    payload.__qqbot_plugin_original_content = payload.content
+
+    if (this.config?.removeAt === false) return
+
+    const mentions = Array.isArray(payload.mentions) ? payload.mentions : []
+    const mentionIds = new Set()
+    for (const item of mentions) {
+      for (const id of [item?.id, item?.user_id, item?.openid, item?.member_openid, item?.qq]) {
+        if (id != null && id !== '') mentionIds.add(String(id))
+      }
+    }
+
+    let content = payload.content
+    for (const id of mentionIds) {
+      const safeId = escapeRegExp(id)
+      content = content.replace(new RegExp(`<@!?${safeId}>\\s*`, 'g'), '')
+    }
+
+    payload.content = content.trimStart()
+  }
+
+  return sdk
+}
+
 export function enhanceSDK(sdk) {
-  return enhanceSdk12(sdk)
+  return enhanceSdk12(patchQQBotRemoveAt(sdk))
 }
