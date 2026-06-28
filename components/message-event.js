@@ -37,6 +37,107 @@ function mergeAdjacentTextSegments(segments) {
 
 const callbackEventCache = new Map()
 
+function normalizeMentionId(adapter, id) {
+  if (id == null) return ''
+  const sep = adapter?.sep || ':'
+  return String(id).split(sep).at(-1)
+}
+
+function getMentionList(event) {
+  return Array.isArray(event?.mentions) ? event.mentions : []
+}
+
+function isSelfMention(item) {
+  return item?.is_you === true || String(item?.is_you) === 'true'
+}
+
+function getQQBotMentionId(item) {
+  return item?.member_openid || item?.openid || item?.id || item?.user_id || item?.qq || null
+}
+
+function getQQBotAtSegmentId(item) {
+  return item?.user_id || item?.qq || item?.id || item?.data?.user_id || item?.data?.qq || item?.data?.id || null
+}
+
+function findMentionById(adapter, event, id) {
+  const targetId = normalizeMentionId(adapter, id)
+  if (!targetId) return null
+  return getMentionList(event).find(item => normalizeMentionId(adapter, getQQBotMentionId(item)) === targetId) || null
+}
+
+function findMentionByAtSegment(adapter, event, segment) {
+  return findMentionById(adapter, event, getQQBotAtSegmentId(segment))
+}
+
+function isSelfAtSegment(adapter, event, segment) {
+  return isSelfMention(findMentionByAtSegment(adapter, event, segment))
+}
+
+function isOtherBotMention(item) {
+  return item?.bot === true && !isSelfMention(item)
+}
+
+function getLeadingMentionFromText(adapter, event, text) {
+  const raw = String(text || '').trimStart()
+  if (!raw) return null
+
+  const firstMention = getMentionList(event)[0] || null
+  if (!firstMention) return null
+
+  const cqAt = raw.match(/^\[CQ:at,(?:qq|user_id|id)=([^,\]]+)/)
+  if (cqAt) return findMentionById(adapter, event, cqAt[1]) || firstMention
+
+  const officialAt = raw.match(/^<@!?([^>\s]+)>/)
+  if (officialAt) return findMentionById(adapter, event, officialAt[1]) || firstMention
+
+  if (raw.startsWith('@')) return firstMention
+  return null
+}
+
+function getLeadingMention(adapter, event) {
+  return getLeadingMentionFromText(
+    adapter,
+    event,
+    event?.__qqbot_plugin_original_content ?? event?.content ?? event?.raw_message
+  )
+}
+
+function shouldIgnoreNonSelfMentionGroupMessage(adapter, event) {
+  if (event?.message_type !== 'group') return false
+
+  const eventId = String(event?.event_id || event?.id || event?.event_type || '')
+  if (eventId.startsWith('GROUP_AT_MESSAGE_CREATE')) return false
+
+  const leadingMention = getLeadingMention(adapter, event)
+  if (!leadingMention) return false
+
+  return !isSelfMention(leadingMention)
+}
+
+function dropSelfAtSegments(adapter, data, event) {
+  if (!Array.isArray(data?.message) || !Array.isArray(event?.mentions)) return
+
+  let atBot = false
+  data.message = data.message.filter(item => {
+    if (item?.type !== 'at') return true
+    if (!isSelfAtSegment(adapter, event, item)) return true
+    atBot = true
+    return false
+  })
+
+  if (atBot) {
+    data.atBot = true
+    data.atbot = true
+    data.atme = true
+  }
+}
+
+function wrapWithQQBotEventReply(msg, eventId = '') {
+  const list = Array.isArray(msg) ? [...msg] : [msg]
+  if (eventId) list.unshift({ type: 'reply', id: `event_${eventId}` })
+  return list
+}
+
 async function makeFriendMessage(adapter, data, event) {
   data.sender = {
     user_id: `${data.self_id}${adapter.sep}${event.sender.user_id}`,
@@ -246,10 +347,16 @@ async function makeMessage(adapter, id, event) {
 
   if (config.filter_bot_msg) {
     if (event.author?.bot) return true
-    if (Array.isArray(event.mentions)) {
-      const isBotMentioned = event.mentions.some(m => m?.is_you === true && m?.scope !== 'all')
-      if (!isBotMentioned && (event.mentions.some(m => m?.scope === 'all') || event.mentions.some(m => m?.bot === true && m?.is_you !== true))) return true
-    }
+    const leadingMention = getLeadingMention(adapter, event)
+    if (isOtherBotMention(leadingMention)) return true
+  }
+
+  if (shouldIgnoreNonSelfMentionGroupMessage(adapter, event)) {
+    Bot.makeLog('debug', [
+      '过滤开头@非机器人自己消息：不触发指令',
+      { event_id: event.event_id, message_type: event.message_type, group_id: event.group_id, raw_message: event.raw_message, content: event.content, mentions: event.mentions }
+    ], id)
+    return true
   }
 
   const mentions = Array.isArray(event.mentions) ? event.mentions : []
@@ -293,9 +400,11 @@ async function makeMessage(adapter, id, event) {
       break
     case 'group':
       await adapter.makeGroupMessage(data, event)
+      dropSelfAtSegments(adapter, data, event)
       break
     case 'guild':
       await adapter.makeGuildMessage(data, event)
+      dropSelfAtSegments(adapter, data, event)
       if (data.message.length === 0) {
         data.message.push({ type: 'text', text: '' })
       }
@@ -466,9 +575,14 @@ function makeNotice(adapter, id, event) {
           inviteStore.recordC2cUser(data.self_id, userOpenid, event.event_id || '', event.timestamp || '')
         }
       }
-      data.reply = msg => sendGroupMsg(adapter, { ...data, group_id: event.group_id }, msg, { event_id: event.event_id })
-      Bot.em(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
-      Bot.em(`${data.post_type}.${data.notice_type}.member.${data.sub_type}`, data)
+      data.reply = msg => sendGroupMsg(adapter, { ...data, group_id: event.group_id }, wrapWithQQBotEventReply(msg, event.notice_id || event.event_id))
+      if (data.sub_type === 'member.increase') {
+        Bot.em(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
+        Bot.em(`${data.post_type}.${data.notice_type}.increase`, { ...data, sub_type: 'increase' })
+      } else {
+        Bot.em(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
+        Bot.em(`${data.post_type}.${data.notice_type}.member.${data.sub_type}`, { ...data, sub_type: `member.${data.sub_type}` })
+      }
       return
     case 'decrease':
     case 'member.decrease':
@@ -499,9 +613,14 @@ function makeNotice(adapter, id, event) {
           }
         }
       }
-      data.reply = msg => sendGroupMsg(adapter, { ...data, group_id: event.group_id }, msg, { event_id: event.event_id })
-      Bot.em(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
-      Bot.em(`${data.post_type}.${data.notice_type}.member.${data.sub_type}`, data)
+      // 退群事件不主动设置 reply；如确实需要发送，业务插件可用 pickGroup(raw_group_id).sendMsg。
+      if (data.sub_type === 'member.decrease') {
+        Bot.em(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
+        Bot.em(`${data.post_type}.${data.notice_type}.decrease`, { ...data, sub_type: 'decrease' })
+      } else {
+        Bot.em(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
+        Bot.em(`${data.post_type}.${data.notice_type}.member.${data.sub_type}`, { ...data, sub_type: `member.${data.sub_type}` })
+      }
       return
     case 'update':
     case 'member.update':
