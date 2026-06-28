@@ -5,6 +5,12 @@ import { TmplPkg } from '../utils/constants.js'
 import { makeMsg, makeRawMarkdownMsg, makeMarkdownMsg, makeGuildMsg } from './message-builder.js'
 import { sendFiles } from './file.js'
 
+function useSmallBtn(data, event) {
+  if (!event) event = {}
+  if (data?.smallbtn || config.smallbtn || config.bots?.[data?.self_id]?.smallbtn) event.smallbtn = true
+  return event
+}
+
 async function sendMsg(adapter, data, send, msg) {
   const rets = { message_id: [], data: [], error: [] }
   let msgs
@@ -96,10 +102,9 @@ async function sendMsg(adapter, data, send, msg) {
 }
 
 export function sendFriendMsg(adapter, data, msg, event) {
-  if (!event) event = {}
-  if (data.smallbtn) event.smallbtn = true
+  event = useSmallBtn(data, event)
   return sendMsg(adapter, data, msg => {
-    if (data.smallbtn) event.smallbtn = true
+    event = useSmallBtn(data, event)
     const options = {
       stream: data.stream || false,
       chunkSize: data.chunkSize,
@@ -110,8 +115,7 @@ export function sendFriendMsg(adapter, data, msg, event) {
 }
 
 export async function sendGroupMsg(adapter, data, msg, event) {
-  if (!event) event = {}
-  if (data.smallbtn) event.smallbtn = true
+  event = useSmallBtn(data, event)
 
   if (Handler.has('QQBot.group.sendMsg')) {
     const res = await Handler.call(
@@ -131,7 +135,7 @@ export async function sendGroupMsg(adapter, data, msg, event) {
     }
   }
   return sendMsg(adapter, data, msg => {
-    if (data.smallbtn) event.smallbtn = true
+    event = useSmallBtn(data, event)
     return data.bot.sdk.sendGroupMessage(data.group_id, msg, event)
   }, msg)
 }
