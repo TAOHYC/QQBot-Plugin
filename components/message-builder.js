@@ -7,17 +7,41 @@ import { makeMarkdownImage } from './image.js'
 import { makeButton, makeButtons, makeTextChain, makeTextChains, makeMarkdownText_, makeMarkdownText, makeMarkdownTemplate, makeMarkdownTemplatePush } from './button.js'
 import { _parseFileSegment } from './file.js'
 
-const MARKDOWN_AFFIX_SMART_TYPES = new Set(['image', 'button', 'markdown', 'raw', 'node'])
-
 function getMarkdownAffixMode() {
   const mode = String(config.markdown?.affixMode || 'smart').trim().toLowerCase()
   return mode === 'all' ? 'all' : 'smart'
 }
 
+function getMarkdownAffixType(item) {
+  if (!item || typeof item !== 'object') return 'text'
+  if (item.type === 'reply' || item.type === 'small' || item.type === 'stream') return ''
+  if (item.type === 'record') return 'audio'
+  if (item.type === 'raw' && item.data && (item.data.type === 'keyboard' || item.data.type === 'button')) return 'button'
+  return item.type || 'text'
+}
+
+function getMarkdownAffixTypes(msgArray) {
+  const types = new Set()
+  for (const item of msgArray) {
+    const type = getMarkdownAffixType(item)
+    if (type) types.add(type)
+  }
+  return types
+}
+
 function shouldApplyMarkdownAffix(content, msgArray) {
   if (getMarkdownAffixMode() === 'all') return true
+
+  const types = getMarkdownAffixTypes(msgArray)
+
+  // æé®ç¹æ®å¤çï¼åªææé®è¦å ï¼æé®åå¶ä»ç±»åæ¼è£ä¹è¦å 
+  if (types.has('button')) return true
+
+  // markdown/text åå®¹åªæå¤è¡æå ï¼åè¡ä¸å 
   if (/[\r\n]/.test(content)) return true
-  return msgArray.some(i => i && typeof i === 'object' && MARKDOWN_AFFIX_SMART_TYPES.has(i.type))
+
+  // åªæä¸ç§åå®¹ç±»åæ¶ä¸å ï¼å¤ç§åå®¹ç±»åæ¼è£æ¶å 
+  return types.size > 1
 }
 
 function applyMarkdownAffix(content, msgArray) {
@@ -51,15 +75,15 @@ export async function makeRawMarkdownMsg(adapter, data, msg, keyboard) {
     try {
       imageResults = await Promise.all(imagePromises)
     } catch (err) {
-      Bot.makeLog('error', ['图片并行处理出错，降级为串行', err], data.self_id)
+      Bot.makeLog('error', ['å¾çå¹¶è¡å¤çåºéï¼éçº§ä¸ºä¸²è¡', err], data.self_id)
       imageResults = []
       for (let j = 0; j < imagePromises.length; j++) {
         try {
           const item = msgArray[imageIndices[j]]
           imageResults.push(await makeMarkdownImage(adapter, data, item.file, item.summary, item))
         } catch (e) {
-          Bot.makeLog('error', [`处理第${j + 1}张图片失败`, e], data.self_id)
-          imageResults.push({ des: '![图片加载失败]', url: '()' })
+          Bot.makeLog('error', [`å¤çç¬¬${j + 1}å¼ å¾çå¤±è´¥`, e], data.self_id)
+          imageResults.push({ des: '![å¾çå è½½å¤±è´¥]', url: '()' })
         }
       }
     }
@@ -89,10 +113,10 @@ export async function makeRawMarkdownMsg(adapter, data, msg, keyboard) {
         content += ''
         break
       case 'file': {
-        Bot.makeLog('debug', ['file segment 原始结构', i], data.self_id)
+        Bot.makeLog('debug', ['file segment åå§ç»æ', i], data.self_id)
         const fileData = _parseFileSegment(adapter, i, data)
         files.push(fileData)
-        Bot.makeLog('debug', ['收集文件消息', fileData], data.self_id)
+        Bot.makeLog('debug', ['æ¶éæä»¶æ¶æ¯', fileData], data.self_id)
         content += ''
         break
       }
@@ -163,7 +187,7 @@ export async function makeRawMarkdownMsg(adapter, data, msg, keyboard) {
     }
     while (button.length) {
       messages.push([
-        { type: 'markdown', content: ' ' },
+        { type: 'markdown', content: applyMarkdownAffix(' ', msgArray) },
         ...button.splice(0, 5)
       ])
     }
@@ -207,15 +231,15 @@ export async function makeMarkdownMsg(adapter, data, msg) {
     try {
       mdImageResults = await Promise.all(mdImagePromises)
     } catch (err) {
-      Bot.makeLog('error', ['Markdown 图片并行处理出错，降级为串行', err], data.self_id)
+      Bot.makeLog('error', ['Markdown å¾çå¹¶è¡å¤çåºéï¼éçº§ä¸ºä¸²è¡', err], data.self_id)
       mdImageResults = []
       for (let j = 0; j < mdImagePromises.length; j++) {
         try {
           const item = msgArray[mdImageIndices[j]]
           mdImageResults.push(await makeMarkdownImage(adapter, data, item.file, item.summary, item))
         } catch (e) {
-          Bot.makeLog('error', [`处理第${j + 1}张图片失败`, e], data.self_id)
-          mdImageResults.push({ des: '![图片加载失败]', url: '()' })
+          Bot.makeLog('error', [`å¤çç¬¬${j + 1}å¼ å¾çå¤±è´¥`, e], data.self_id)
+          mdImageResults.push({ des: '![å¾çå è½½å¤±è´¥]', url: '()' })
         }
       }
     }
@@ -251,10 +275,10 @@ export async function makeMarkdownMsg(adapter, data, msg) {
         content += ''
         break
       case 'file': {
-        Bot.makeLog('debug', ['file segment 原始结构', i], data.self_id)
+        Bot.makeLog('debug', ['file segment åå§ç»æ', i], data.self_id)
         const fileData = _parseFileSegment(adapter, i, data)
         files.push(fileData)
-        Bot.makeLog('debug', ['收集文件消息', fileData], data.self_id)
+        Bot.makeLog('debug', ['æ¶éæä»¶æ¶æ¯', fileData], data.self_id)
         content += ''
         break
       }
@@ -313,7 +337,7 @@ export async function makeMarkdownMsg(adapter, data, msg) {
           let { wsids } = await Handler.call('ws.tool.toImg', e, i.data)
 
           if (!result.length && data.wsids && data.wsids?.fnc) {
-            wsids = wsids.map((id, k) => ({ text: `${data.wsids.text}${k}`, callback: `#ws查看${id}` }))
+            wsids = wsids.map((id, k) => ({ text: `${data.wsids.text}${k}`, callback: `#wsæ¥ç${id}` }))
             result = _.chunk(_.tail(wsids), data.wsids.col)
           }
 
@@ -474,10 +498,10 @@ export async function makeMsg(adapter, data, msg) {
         i.file = await adapter.makeRecord(i.file)
       case 'video':
       case 'file': {
-        Bot.makeLog('debug', ['file segment 原始结构', i], data.self_id)
+        Bot.makeLog('debug', ['file segment åå§ç»æ', i], data.self_id)
         const fileData = _parseFileSegment(adapter, i, data)
         files.push(fileData)
-        Bot.makeLog('debug', ['收集文件消息', fileData], data.self_id)
+        Bot.makeLog('debug', ['æ¶éæä»¶æ¶æ¯', fileData], data.self_id)
         if (message.some(s => sendType.includes(s.type))) {
           messages.push(message)
           message = []
@@ -550,7 +574,7 @@ export async function makeMsg(adapter, data, msg) {
               message = []
             }
             message.push(msg)
-            i.text = i.text.replace(url, '[链接(请扫码查看)]')
+            i.text = i.text.replace(url, '[é¾æ¥(è¯·æ«ç æ¥ç)]')
           }
         }
       } else if (adapter.toQRCodeMode === 'url') {
@@ -660,7 +684,7 @@ export async function makeGuildMsg(adapter, data, msg) {
             }
             messages.push(message)
             message = []
-            i.text = i.text.replace(url, '[链接(请扫码查看)]')
+            i.text = i.text.replace(url, '[é¾æ¥(è¯·æ«ç æ¥ç)]')
           }
         }
       } else if (adapter.toQRCodeMode === 'url') {
