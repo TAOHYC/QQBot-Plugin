@@ -34,13 +34,13 @@ function shouldApplyMarkdownAffix(content, msgArray) {
 
   const types = getMarkdownAffixTypes(msgArray)
 
-  // æé®ç¹æ®å¤çï¼åªææé®è¦å ï¼æé®åå¶ä»ç±»åæ¼è£ä¹è¦å 
+  // 按钮特殊处理：只有按钮要加，按钮和其他类型拼装也要加
   if (types.has('button')) return true
 
-  // markdown/text åå®¹åªæå¤è¡æå ï¼åè¡ä¸å 
+  // markdown/text 内容只有多行才加，单行不加
   if (/[\r\n]/.test(content)) return true
 
-  // åªæä¸ç§åå®¹ç±»åæ¶ä¸å ï¼å¤ç§åå®¹ç±»åæ¼è£æ¶å 
+  // 只有一种内容类型时不加；多种内容类型拼装时加
   return types.size > 1
 }
 
@@ -75,15 +75,15 @@ export async function makeRawMarkdownMsg(adapter, data, msg, keyboard) {
     try {
       imageResults = await Promise.all(imagePromises)
     } catch (err) {
-      Bot.makeLog('error', ['å¾çå¹¶è¡å¤çåºéï¼éçº§ä¸ºä¸²è¡', err], data.self_id)
+      Bot.makeLog('error', ['图片并行处理出错，降级为串行', err], data.self_id)
       imageResults = []
       for (let j = 0; j < imagePromises.length; j++) {
         try {
           const item = msgArray[imageIndices[j]]
           imageResults.push(await makeMarkdownImage(adapter, data, item.file, item.summary, item))
         } catch (e) {
-          Bot.makeLog('error', [`å¤çç¬¬${j + 1}å¼ å¾çå¤±è´¥`, e], data.self_id)
-          imageResults.push({ des: '![å¾çå è½½å¤±è´¥]', url: '()' })
+          Bot.makeLog('error', [`处理第${j + 1}张图片失败`, e], data.self_id)
+          imageResults.push({ des: '![图片加载失败]', url: '()' })
         }
       }
     }
@@ -113,10 +113,10 @@ export async function makeRawMarkdownMsg(adapter, data, msg, keyboard) {
         content += ''
         break
       case 'file': {
-        Bot.makeLog('debug', ['file segment åå§ç»æ', i], data.self_id)
+        Bot.makeLog('debug', ['file segment 原始结构', i], data.self_id)
         const fileData = _parseFileSegment(adapter, i, data)
         files.push(fileData)
-        Bot.makeLog('debug', ['æ¶éæä»¶æ¶æ¯', fileData], data.self_id)
+        Bot.makeLog('debug', ['收集文件消息', fileData], data.self_id)
         content += ''
         break
       }
@@ -231,15 +231,15 @@ export async function makeMarkdownMsg(adapter, data, msg) {
     try {
       mdImageResults = await Promise.all(mdImagePromises)
     } catch (err) {
-      Bot.makeLog('error', ['Markdown å¾çå¹¶è¡å¤çåºéï¼éçº§ä¸ºä¸²è¡', err], data.self_id)
+      Bot.makeLog('error', ['Markdown 图片并行处理出错，降级为串行', err], data.self_id)
       mdImageResults = []
       for (let j = 0; j < mdImagePromises.length; j++) {
         try {
           const item = msgArray[mdImageIndices[j]]
           mdImageResults.push(await makeMarkdownImage(adapter, data, item.file, item.summary, item))
         } catch (e) {
-          Bot.makeLog('error', [`å¤çç¬¬${j + 1}å¼ å¾çå¤±è´¥`, e], data.self_id)
-          mdImageResults.push({ des: '![å¾çå è½½å¤±è´¥]', url: '()' })
+          Bot.makeLog('error', [`处理第${j + 1}张图片失败`, e], data.self_id)
+          mdImageResults.push({ des: '![图片加载失败]', url: '()' })
         }
       }
     }
@@ -275,10 +275,10 @@ export async function makeMarkdownMsg(adapter, data, msg) {
         content += ''
         break
       case 'file': {
-        Bot.makeLog('debug', ['file segment åå§ç»æ', i], data.self_id)
+        Bot.makeLog('debug', ['file segment 原始结构', i], data.self_id)
         const fileData = _parseFileSegment(adapter, i, data)
         files.push(fileData)
-        Bot.makeLog('debug', ['æ¶éæä»¶æ¶æ¯', fileData], data.self_id)
+        Bot.makeLog('debug', ['收集文件消息', fileData], data.self_id)
         content += ''
         break
       }
@@ -337,7 +337,7 @@ export async function makeMarkdownMsg(adapter, data, msg) {
           let { wsids } = await Handler.call('ws.tool.toImg', e, i.data)
 
           if (!result.length && data.wsids && data.wsids?.fnc) {
-            wsids = wsids.map((id, k) => ({ text: `${data.wsids.text}${k}`, callback: `#wsæ¥ç${id}` }))
+            wsids = wsids.map((id, k) => ({ text: `${data.wsids.text}${k}`, callback: `#ws查看${id}` }))
             result = _.chunk(_.tail(wsids), data.wsids.col)
           }
 
@@ -498,10 +498,10 @@ export async function makeMsg(adapter, data, msg) {
         i.file = await adapter.makeRecord(i.file)
       case 'video':
       case 'file': {
-        Bot.makeLog('debug', ['file segment åå§ç»æ', i], data.self_id)
+        Bot.makeLog('debug', ['file segment 原始结构', i], data.self_id)
         const fileData = _parseFileSegment(adapter, i, data)
         files.push(fileData)
-        Bot.makeLog('debug', ['æ¶éæä»¶æ¶æ¯', fileData], data.self_id)
+        Bot.makeLog('debug', ['收集文件消息', fileData], data.self_id)
         if (message.some(s => sendType.includes(s.type))) {
           messages.push(message)
           message = []
@@ -574,7 +574,7 @@ export async function makeMsg(adapter, data, msg) {
               message = []
             }
             message.push(msg)
-            i.text = i.text.replace(url, '[é¾æ¥(è¯·æ«ç æ¥ç)]')
+            i.text = i.text.replace(url, '[链接(请扫码查看)]')
           }
         }
       } else if (adapter.toQRCodeMode === 'url') {
@@ -684,7 +684,7 @@ export async function makeGuildMsg(adapter, data, msg) {
             }
             messages.push(message)
             message = []
-            i.text = i.text.replace(url, '[é¾æ¥(è¯·æ«ç æ¥ç)]')
+            i.text = i.text.replace(url, '[链接(请扫码查看)]')
           }
         }
       } else if (adapter.toQRCodeMode === 'url') {
