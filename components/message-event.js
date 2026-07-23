@@ -528,17 +528,32 @@ async function makeCallback(adapter, id, event) {
   Bot.em(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
 }
 
-function makeNotice(adapter, id, event) {
+async function makeNotice(adapter, id, event) {
+  // QQ 官方事件中 group.increase/decrease 表示机器人自身被加群/移出群，
+  // 而 Yunzai/ICQQ 通常使用 increase/decrease 表示普通成员进退群。
+  // 将机器人自身的群变更映射为独立事件，避免触发欢迎新人/成员退群插件。
+  const isGroupBotChange = event.notice_type === 'group'
+    && ['increase', 'decrease'].includes(event.sub_type)
+  const subType = isGroupBotChange ? `bot.${event.sub_type}` : event.sub_type
+  const rawUserId = event.user_id
+    || (!isGroupBotChange
+      ? event.operator_id || event.member_openid || event.raw?.d?.member_openid
+      : undefined)
+
   const data = {
     raw: event,
     bot: Bot[id],
     self_id: id,
     post_type: event.post_type,
     notice_type: event.notice_type,
-    sub_type: event.sub_type,
+    sub_type: subType,
     notice_id: event.notice_id,
     group_id: event.group_id,
-    user_id: event.user_id || event.operator_id,
+    user_id: rawUserId,
+    operator_id: event.operator_id,
+    raw_group_id: event.group_id,
+    raw_user_id: rawUserId,
+    raw_operator_id: event.operator_id,
     platform: 'QQ-notice'
   }
 
@@ -547,13 +562,40 @@ function makeNotice(adapter, id, event) {
       return adapter.makeCallback(id, event)
     case 'increase':
     case 'member.increase':
-      Bot[data.self_id].dau.setDau('group_increase', data)
+      if (event.notice_type === 'group') {
+        Bot[data.self_id].dau.setDau('group_increase', data)
+      }
       Bot.makeLog('info', `群成员增加：[群:${event.group_id}, 用户:${event.user_id}]`, data.self_id)
       if (event.notice_type === 'group') {
         const inviterOpenid = event.operator_id || event.user_id || ''
         if (inviterOpenid) {
           inviteStore.recordGroupAdd(data.self_id, inviterOpenid, event.group_id, event.timestamp || '')
         }
+
+        // QQ 官方群没有可随时拉取的完整成员列表，gml 是适配器维护的持久化缓存。
+        // 收到入群事件时主动补入，避免必须等成员发言后才进入候选列表。
+        try {
+          const groupCacheId = `${data.self_id}${adapter.sep}${event.group_id}`
+          let memberMap = data.bot.gml?.get(groupCacheId) || data.bot.gml?.get(String(event.group_id))
+          if (!memberMap && data.bot.gml) {
+            memberMap = new Map()
+            await data.bot.gml.set(groupCacheId, memberMap)
+          }
+          if (memberMap && event.user_id) {
+            const memberCacheId = `${data.self_id}${adapter.sep}${event.user_id}`
+            await memberMap.set(memberCacheId, {
+              ...memberMap.get(memberCacheId),
+              user_id: memberCacheId,
+              raw_user_id: event.user_id,
+              member_openid: event.user_id,
+              nickname: event.nick || event.nickname || event.user_name || event.user_id,
+              avatar: event.avatar || `https://q.qlogo.cn/qqapp/${data.bot.info.appid}/${event.user_id}/0`
+            })
+          }
+        } catch (err) {
+          Bot.makeLog('debug', ['写入入群成员缓存失败', err.message], data.self_id)
+        }
+
         const path = join(process.cwd(), 'plugins', 'QQBot-Plugin', 'Model', 'template', 'groupIncreaseMsg.js')
         if (fs.existsSync(path)) {
           import(`file://${path}`).then(i => i.default).then(async i => {
@@ -586,7 +628,9 @@ function makeNotice(adapter, id, event) {
       return
     case 'decrease':
     case 'member.decrease':
-      Bot[data.self_id].dau.setDau('group_decrease', data)
+      if (event.notice_type === 'group') {
+        Bot[data.self_id].dau.setDau('group_decrease', data)
+      }
       Bot.makeLog('info', `群成员减少：[群:${event.group_id}, 用户:${event.user_id}]`, data.self_id)
       if (event.notice_type === 'group') {
         const kickerOpenid = event.operator_id || event.user_id || ''
@@ -596,20 +640,46 @@ function makeNotice(adapter, id, event) {
         const gml = data.bot.gml
         if (gml) {
           try {
-            const memberInfo = gml.get(event.user_id) || Array.from(gml.values()).find(m =>
-              m?.member_openid === event.user_id || m?.raw_user_id === event.user_id
-            )
+            const groupCacheId = `${data.self_id}${adapter.sep}${event.group_id}`
+            const memberMap = gml.get(groupCacheId) || gml.get(String(event.group_id))
+            const memberCacheId = `${data.self_id}${adapter.sep}${event.user_id}`
+
+            let matchedKey = null
+            let memberInfo = memberMap?.get(memberCacheId) || memberMap?.get(event.user_id)
+            if (memberInfo) {
+              matchedKey = memberMap.has(memberCacheId) ? memberCacheId : event.user_id
+            } else if (memberMap) {
+              for (const [key, member] of memberMap) {
+                if (
+                  String(member?.member_openid || '') === String(event.user_id) ||
+                  String(member?.raw_user_id || '') === String(event.user_id) ||
+                  String(member?.user_id || '').replace(`${data.self_id}${adapter.sep}`, '') === String(event.user_id)
+                ) {
+                  matchedKey = key
+                  memberInfo = member
+                  break
+                }
+              }
+            }
+
             if (memberInfo) {
               data.sender = {
-                user_id: `${data.self_id}${adapter.sep}${event.user_id}`,
+                user_id: memberCacheId,
                 raw_user_id: event.user_id,
                 nickname: memberInfo.nick || memberInfo.nickname || event.user_id,
                 avatar: memberInfo.avatar || ''
               }
+              data.member = { ...memberInfo, ...data.sender }
               data.nickname = data.sender.nickname
             }
-          } catch (e) {
-            Bot.makeLog('debug', ['恢复离开成员信息失败', e.message], data.self_id)
+
+            // 原代码只读取了 gml.get(event.user_id)，把“用户 ID”误当成了“群 ID”，
+            // 且完全没有 delete，所以离群成员会永久残留在持久化 gml 中。
+            if (matchedKey != null && memberMap) {
+              await memberMap.delete(matchedKey)
+            }
+          } catch (err) {
+            Bot.makeLog('debug', ['清理离开成员缓存失败', err.message], data.self_id)
           }
         }
       }
@@ -622,6 +692,9 @@ function makeNotice(adapter, id, event) {
         Bot.em(`${data.post_type}.${data.notice_type}.member.${data.sub_type}`, { ...data, sub_type: `member.${data.sub_type}` })
       }
       return
+    case 'bot.increase':
+    case 'bot.decrease':
+      break
     case 'update':
     case 'member.update':
     case 'add':
